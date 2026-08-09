@@ -1,0 +1,15 @@
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends g++ make \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+COPY Makefile.inc README.md AGENTS.md ./
+COPY examples ./examples
+COPY tests/platform-test.sh ./tests/platform-test.sh
+
+CMD ["sh", "tests/platform-test.sh"]
