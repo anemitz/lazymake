@@ -96,6 +96,32 @@ make check    production package + every test
 - Per-target settings: `<target>_CPPFLAGS`, `<target>_CFLAGS`,
   `<target>_CXXFLAGS`, `<target>_LDFLAGS`, `<target>_LDLIBS`, and
   `<target>_STATICLIBS`.
+- Groups: `TARGET_GROUPS`, `<group>_TARGETS`, and `<group>_STATICLIBS`. A
+  group applies archive paths to named binaries, shared libraries, or tests
+  as both link inputs and prerequisites. Per-target `_STATICLIBS` come first,
+  then matching groups in `TARGET_GROUPS` order. Use `=` when an archive path
+  contains `$(PKGDIR)`.
+
+```make
+TARGET_GROUPS := core
+core_TARGETS := app SmokeTest
+core_STATICLIBS = $(PKGDIR)/lib/libcore.a
+```
+
+- External archives: `EXTERNAL_STATICLIBS`, `<lib>_PATH`, and `<lib>_DIR`.
+  Names are the owning component's `STATICLIBS` targets. A path that appears in
+  an effective `_STATICLIBS` list is refreshed by recursing into `_DIR` for
+  that name, unless this Makefile itself lists the name in `STATICLIBS`. Use
+  `=` when `_PATH` contains `$(PKGDIR)` or `_DIR` contains `$(PROJECT_ROOT)`.
+  Parent `SUBDIRS` still need an explicit producer-before-consumer order for
+  `make -j`. Concurrent standalone consumer builds that share a stale archive
+  can both recurse into the owner and race on `ar`; that is out of contract.
+
+```make
+EXTERNAL_STATICLIBS := libcore
+libcore_PATH = $(PKGDIR)/lib/libcore.a
+libcore_DIR = $(PROJECT_ROOT)/lib
+```
 
 | Command | Result |
 | --- | --- |
@@ -124,6 +150,8 @@ make -C examples/main_deliverable
 make -C examples/shared_lib
 make -C examples/mixed_sources
 make -C examples/test_suite check
+make -C examples/target_groups check
+make -C examples/external_staticlibs
 ```
 
 Requires GNU Make 3.81+, a C/C++ toolchain, and basic host utilities. Validate

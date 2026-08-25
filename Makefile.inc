@@ -51,10 +51,32 @@ ALL_TARGETS := $(BINS) $(DYNLIBS) $(STATICLIBS) $(TESTS)
 target_sources = $(if $(strip $($(1)_SOURCES)),$($(1)_SOURCES),$(1).cc)
 target_objects = $(foreach source,$(call target_sources,$(1)),$(BUILDDIR)/$(1)/$(source).o)
 
+# Per-target archives, then matching groups in TARGET_GROUPS order. Recursive
+# values expand here so $(PKGDIR) works when assigned with =. Static-library
+# targets are not group members; they are not linked.
+target_staticlibs = $(strip $($(1)_STATICLIBS) $(foreach group,$(TARGET_GROUPS),$(if $(filter $(1),$($(group)_TARGETS)),$($(group)_STATICLIBS))))
+
 ALL_SOURCES := $(foreach target,$(ALL_TARGETS),$(call target_sources,$(target)))
 UNSUPPORTED_SOURCES := $(filter-out %.c %.cc %.cpp %.cxx,$(ALL_SOURCES))
 ifneq ($(strip $(UNSUPPORTED_SOURCES)),)
     $(error unsupported source extension: $(UNSUPPORTED_SOURCES))
+endif
+
+# Group names share the <name>_STATICLIBS form with targets, so a collision
+# would make one variable mean two things.
+GROUP_NAME_COLLISION := $(filter $(TARGET_GROUPS),$(ALL_TARGETS))
+ifneq ($(strip $(GROUP_NAME_COLLISION)),)
+    $(error TARGET_GROUPS name collides with a target: $(GROUP_NAME_COLLISION))
+endif
+
+UNKNOWN_GROUP_TARGETS := $(filter-out $(BINS) $(DYNLIBS) $(TESTS),$(foreach group,$(TARGET_GROUPS),$($(group)_TARGETS)))
+ifneq ($(strip $(UNKNOWN_GROUP_TARGETS)),)
+    $(error TARGET_GROUPS member is not a binary, shared library, or test: $(UNKNOWN_GROUP_TARGETS))
+endif
+
+EXTERNAL_NAME_COLLISION := $(filter $(EXTERNAL_STATICLIBS),$(BINS) $(DYNLIBS) $(TESTS) $(TARGET_GROUPS))
+ifneq ($(strip $(EXTERNAL_NAME_COLLISION)),)
+    $(error EXTERNAL_STATICLIBS name collides with a target or group: $(EXTERNAL_NAME_COLLISION))
 endif
 
 bin_path = $(PKGDIR)/bin/$(1)
@@ -136,18 +158,18 @@ define BIN_template
 .PHONY: $(1)
 $(1): $(call bin_path,$(1))
 
-$(call bin_path,$(1)): $$(call target_objects,$(1)) $$($(1)_STATICLIBS)
+$(call bin_path,$(1)): $$(call target_objects,$(1)) $$(call target_staticlibs,$(1))
 	@mkdir -p "$$(@D)"
-	$$(CXX) $$(call target_objects,$(1)) $$(LAZYMAKE_LDFLAGS) $$(LDFLAGS) $$($(1)_LDFLAGS) $$($(1)_STATICLIBS) $$(LDLIBS) $$($(1)_LDLIBS) -o "$$@"
+	$$(CXX) $$(call target_objects,$(1)) $$(LAZYMAKE_LDFLAGS) $$(LDFLAGS) $$($(1)_LDFLAGS) $$(call target_staticlibs,$(1)) $$(LDLIBS) $$($(1)_LDLIBS) -o "$$@"
 endef
 
 define DYNLIB_template
 .PHONY: $(1)
 $(1): $(call dynlib_path,$(1))
 
-$(call dynlib_path,$(1)): $$(call target_objects,$(1)) $$($(1)_STATICLIBS)
+$(call dynlib_path,$(1)): $$(call target_objects,$(1)) $$(call target_staticlibs,$(1))
 	@mkdir -p "$$(@D)"
-	$$(CXX) $$(SHARED_LINK_FLAGS) $$(SHARED_INSTALL_NAME) -o "$$@" $$(call target_objects,$(1)) $$(LAZYMAKE_LDFLAGS) $$(LDFLAGS) $$($(1)_LDFLAGS) $$($(1)_STATICLIBS) $$(LDLIBS) $$($(1)_LDLIBS)
+	$$(CXX) $$(SHARED_LINK_FLAGS) $$(SHARED_INSTALL_NAME) -o "$$@" $$(call target_objects,$(1)) $$(LAZYMAKE_LDFLAGS) $$(LDFLAGS) $$($(1)_LDFLAGS) $$(call target_staticlibs,$(1)) $$(LDLIBS) $$($(1)_LDLIBS)
 endef
 
 define STATICLIB_template
@@ -164,12 +186,42 @@ define TEST_template
 .PHONY: $(1)
 $(1): $(call test_path,$(1))
 
-$(call test_path,$(1)): $$(call target_objects,$(1)) $$($(1)_STATICLIBS)
+$(call test_path,$(1)): $$(call target_objects,$(1)) $$(call target_staticlibs,$(1))
 	@mkdir -p "$$(@D)"
-	$$(CXX) $$(call target_objects,$(1)) $$(LAZYMAKE_LDFLAGS) $$(LDFLAGS) $$($(1)_LDFLAGS) $$($(1)_STATICLIBS) $$(LDLIBS) $$($(1)_LDLIBS) -o "$$@"
+	$$(CXX) $$(call target_objects,$(1)) $$(LAZYMAKE_LDFLAGS) $$(LDFLAGS) $$($(1)_LDFLAGS) $$(call target_staticlibs,$(1)) $$(LDLIBS) $$($(1)_LDLIBS) -o "$$@"
 endef
 
 $(foreach target,$(BINS),$(eval $(call BIN_template,$(target))))
 $(foreach target,$(DYNLIBS),$(eval $(call DYNLIB_template,$(target))))
 $(foreach target,$(STATICLIBS),$(eval $(call STATICLIB_template,$(target))))
 $(foreach target,$(TESTS),$(eval $(call TEST_template,$(target))))
+
+# Archives this component links. External refresh rules fire only for paths
+# that appear here, so a shared table does not recurse from unrelated packages.
+LINKED_STATICLIBS := $(sort $(foreach target,$(BINS) $(DYNLIBS) $(TESTS),$(call target_staticlibs,$(target))))
+
+# Names this Makefile links but does not build. Membership in STATICLIBS is
+# the owner: that Makefile already has a real archive recipe.
+external_staticlib_used = $(if $(filter $(1),$(STATICLIBS)),,$(if $(filter $($(1)_PATH),$(LINKED_STATICLIBS)),$(1)))
+USED_EXTERNAL_STATICLIBS := $(strip $(foreach lib,$(EXTERNAL_STATICLIBS),$(call external_staticlib_used,$(lib))))
+
+$(foreach lib,$(USED_EXTERNAL_STATICLIBS),$(if $(strip $($(lib)_PATH)),,$(error EXTERNAL_STATICLIBS $(lib) has an empty _PATH)))
+$(foreach lib,$(USED_EXTERNAL_STATICLIBS),$(if $(strip $($(lib)_DIR)),,$(error EXTERNAL_STATICLIBS $(lib) has an empty _DIR)))
+$(foreach lib,$(USED_EXTERNAL_STATICLIBS),$(if $(filter /lib/% /bin/%,$($(lib)_PATH)),$(error EXTERNAL_STATICLIBS $(lib)_PATH looks like it expanded with an empty PKGDIR; assign _PATH with =)))
+
+USED_EXTERNAL_PATHS := $(foreach lib,$(USED_EXTERNAL_STATICLIBS),$($(lib)_PATH))
+$(foreach lib,$(USED_EXTERNAL_STATICLIBS),$(if $(filter-out 1,$(words $(filter $($(lib)_PATH),$(USED_EXTERNAL_PATHS)))),$(error duplicate EXTERNAL_STATICLIBS path: $($(lib)_PATH))))
+
+# A phony proxy always asks the owning Makefile to check freshness. That
+# Makefile and its dependency files know whether sources changed. The path
+# recipe does not touch the archive, so a no-op refresh does not relink.
+define EXTERNAL_STATICLIB_template
+.PHONY: lazymake-external-$(1)
+lazymake-external-$(1):
+	+$$(MAKE) -C "$$($(1)_DIR)" $(1)
+
+$$($(1)_PATH): lazymake-external-$(1)
+	@test -f "$$@"
+endef
+
+$(foreach lib,$(USED_EXTERNAL_STATICLIBS),$(eval $(call EXTERNAL_STATICLIB_template,$(lib))))

@@ -67,18 +67,41 @@ assert_not_contains()
     esac
 }
 
+# Print a Make expression after the component Makefile has been included.
+expand_call()
+{
+    component=$1
+    expr=$2
+    shift 2
+
+    printf '%s\n' \
+        '.PHONY: _lazymake_test_value' \
+        '_lazymake_test_value:' \
+        "	@printf '%s\\n' '$expr'" |
+        "$MAKE" -C "$component" --no-print-directory \
+            -f Makefile -f - "$@" _lazymake_test_value
+}
+
 config_value()
 {
     component=$1
     key=$2
     shift 2
 
-    printf '%s\n' \
-        '.PHONY: _lazymake_test_value' \
-        '_lazymake_test_value:' \
-        "	@printf '%s\\n' '\$($key)'" |
-        "$MAKE" -C "$component" --no-print-directory \
-            -f Makefile -f - "$@" _lazymake_test_value
+    expand_call "$component" "\$($key)" "$@"
+}
+
+expect_make_error()
+{
+    component=$1
+    expected=$2
+    label=$3
+    err=$component.err
+
+    if "$MAKE" -C "$component" package >"$component.out" 2>"$err"; then
+        fail "$label"
+    fi
+    assert_contains "$(cat "$err")" "$expected" "$label"
 }
 
 trap cleanup EXIT HUP INT TERM
@@ -91,6 +114,8 @@ printf 'Testing native %s/%s\n' "$(uname -s)" "$(uname -m)"
 "$MAKE" -C "$ROOT/examples/mixed_sources"
 test_output=$("$MAKE" -C "$ROOT/examples/test_suite" check)
 printf '%s\n' "$test_output"
+group_check=$("$MAKE" -C "$ROOT/examples/target_groups" check)
+printf '%s\n' "$group_check"
 
 package=$(config_value "$ROOT/examples/main_deliverable/app" PKGDIR)
 build_root=$(config_value "$ROOT/examples/main_deliverable/app" BUILD_ROOT)
@@ -105,6 +130,61 @@ pass 'mixed-source binary is packaged'
 assert_equal "$("$package/bin/hello")" 'hello from lazymake' 'packaged binary runs'
 assert_equal "$("$package/bin/mixed")" 'hello from mixed sources' 'mixed binary runs'
 assert_contains "$test_output" 'test suite passed' 'check runs declared tests'
+assert_contains "$group_check" 'target groups passed' 'grouped tests link their static library'
+
+group_package=$(config_value "$ROOT/examples/target_groups" PKGDIR)
+[ -x "$group_package/bin/app" ] || fail 'grouped binary is packaged'
+pass 'grouped binary is packaged'
+[ -x "$group_package/bin/extra" ] || fail 'ungrouped binary is packaged'
+pass 'ungrouped binary is packaged'
+"$group_package/bin/app" || fail 'grouped binary links the static library'
+pass 'grouped binary links the static library'
+"$group_package/bin/extra" || fail 'ungrouped binary runs without the static library'
+pass 'ungrouped binary runs without the static library'
+
+group_dryrun=$("$MAKE" -C "$ROOT/examples/target_groups" -n -B)
+app_link=$(printf '%s\n' "$group_dryrun" | awk '/\/bin\/app/{print; exit}')
+extra_link=$(printf '%s\n' "$group_dryrun" | awk '/\/bin\/extra/{print; exit}')
+assert_contains "$app_link" 'libcore.a' 'group archives reach selected binaries'
+assert_not_contains "$extra_link" 'libcore.a' 'group archives skip unrelated binaries'
+
+sleep 1
+touch "$ROOT/examples/target_groups/libcore.cc"
+group_rebuild=$("$MAKE" -C "$ROOT/examples/target_groups")
+assert_contains "$group_rebuild" '/bin/app' 'archive changes relink grouped binaries'
+assert_not_contains "$group_rebuild" '/bin/extra' 'archive changes do not relink unrelated binaries'
+
+"$MAKE" -C "$ROOT/examples/external_staticlibs"
+ext_package=$(config_value "$ROOT/examples/external_staticlibs/app" PKGDIR)
+[ -x "$ext_package/bin/extapp" ] || fail 'external consumer binary is packaged'
+pass 'external consumer binary is packaged'
+[ -f "$ext_package/lib/libext.a" ] || fail 'external producer archive is packaged'
+pass 'external producer archive is packaged'
+"$ext_package/bin/extapp" || fail 'external consumer links the producer archive'
+pass 'external consumer links the producer archive'
+
+lib_dryrun=$("$MAKE" -C "$ROOT/examples/external_staticlibs/lib" -n -B)
+assert_not_contains "$lib_dryrun" 'lazymake-external-' 'archive owner does not emit a refresh proxy'
+
+app_dryrun=$("$MAKE" -C "$ROOT/examples/external_staticlibs/app" -n)
+assert_contains "$app_dryrun" 'external_staticlibs/lib' 'consumer refresh proxy recurses into the owner directory'
+
+rm -f "$ext_package/lib/libext.a" "$ext_package/bin/extapp"
+"$MAKE" -C "$ROOT/examples/external_staticlibs/app"
+[ -f "$ext_package/lib/libext.a" ] || fail 'standalone consumer rebuilds a missing external archive'
+pass 'standalone consumer rebuilds a missing external archive'
+"$ext_package/bin/extapp" || fail 'standalone consumer links the rebuilt archive'
+pass 'standalone consumer links the rebuilt archive'
+
+sleep 1
+touch "$ROOT/examples/external_staticlibs/lib/libext.cc"
+ext_rebuild=$("$MAKE" -C "$ROOT/examples/external_staticlibs/app")
+assert_contains "$ext_rebuild" 'libext.cc' 'consumer refresh rebuilds a stale producer source'
+assert_contains "$ext_rebuild" '/bin/extapp' 'consumer refresh relinks after the producer archive changes'
+
+ext_norebuild=$("$MAKE" -C "$ROOT/examples/external_staticlibs/app")
+assert_contains "$ext_norebuild" 'external_staticlibs/lib' 'unchanged external refresh still consults the owner'
+assert_not_contains "$ext_norebuild" '/bin/extapp' 'unchanged external archive does not relink the consumer'
 
 smoke_build=$(config_value "$ROOT/examples/test_suite" BUILDDIR)
 [ -x "$smoke_build/tests/SmokeTest" ] || fail 'test executable stays in the build tree'
@@ -193,6 +273,10 @@ beta_SOURCES := beta.cc shared.cc
 beta_CXXFLAGS := -DBETA
 nested_SOURCES := src/nested.cc
 collision_SOURCES := collision-main.cc collision.c collision.cc
+
+TARGET_GROUPS := support
+support_TARGETS := alpha
+support_STATICLIBS = $(PKGDIR)/lib/libsupport.a
 
 include ../Build.mk
 EOF
@@ -340,6 +424,129 @@ pass 'generated content waits for resources'
 "$fixture_package/bin/nested" || fail 'nested sources build'
 "$fixture_package/bin/collision" || fail 'same-basename C and C++ sources build'
 pass 'target-owned objects cover shared, nested, and colliding sources'
+
+fixture_dryrun=$("$MAKE" -C "$FIXTURE/app" -n -B)
+alpha_link=$(printf '%s\n' "$fixture_dryrun" | awk '/\/bin\/alpha/{print; exit}')
+nested_link=$(printf '%s\n' "$fixture_dryrun" | awk '/\/bin\/nested/{print; exit}')
+assert_contains "$alpha_link" 'libsupport.a' 'fixture groups reach selected binaries'
+assert_not_contains "$nested_link" 'libsupport.a' 'fixture groups skip unrelated binaries'
+
+mkdir -p "$FIXTURE/groups" "$FIXTURE/bad-unknown" "$FIXTURE/bad-collision" "$FIXTURE/bad-static" \
+    "$FIXTURE/bad-external-name" "$FIXTURE/bad-external-dir" "$FIXTURE/bad-external-dup" \
+    "$FIXTURE/bad-external-pkgdir" "$FIXTURE/unused-external"
+cat >"$FIXTURE/groups/Makefile" <<'EOF'
+BINS := app extra
+DYNLIBS := libplug
+app_STATICLIBS = $(PKGDIR)/lib/per-target.a
+TARGET_GROUPS := first hyphen-group
+first_TARGETS := app
+first_STATICLIBS = $(PKGDIR)/lib/first.a
+hyphen-group_TARGETS := app extra libplug
+hyphen-group_STATICLIBS = $(PKGDIR)/lib/second.a
+include ../Build.mk
+EOF
+
+groups_pkg=$(config_value "$FIXTURE/groups" PKGDIR)
+assert_equal \
+    "$(expand_call "$FIXTURE/groups" '$(call target_staticlibs,app)')" \
+    "$groups_pkg/lib/per-target.a $groups_pkg/lib/first.a $groups_pkg/lib/second.a" \
+    'per-target archives precede matching groups in TARGET_GROUPS order'
+assert_equal \
+    "$(expand_call "$FIXTURE/groups" '$(call target_staticlibs,extra)')" \
+    "$groups_pkg/lib/second.a" \
+    'unselected groups do not contribute archives'
+assert_equal \
+    "$(expand_call "$FIXTURE/groups" '$(call target_staticlibs,libplug)')" \
+    "$groups_pkg/lib/second.a" \
+    'groups apply to shared libraries'
+
+cat >"$FIXTURE/bad-unknown/Makefile" <<'EOF'
+BINS := app
+TARGET_GROUPS := core
+core_TARGETS := missing
+include ../Build.mk
+EOF
+expect_make_error "$FIXTURE/bad-unknown" \
+    'TARGET_GROUPS member is not a binary, shared library, or test' \
+    'unknown group members are rejected'
+
+cat >"$FIXTURE/bad-collision/Makefile" <<'EOF'
+BINS := core
+TARGET_GROUPS := core
+core_TARGETS := core
+include ../Build.mk
+EOF
+expect_make_error "$FIXTURE/bad-collision" \
+    'TARGET_GROUPS name collides with a target' \
+    'group names that match targets are rejected'
+
+cat >"$FIXTURE/bad-static/Makefile" <<'EOF'
+BINS := app
+STATICLIBS := libcore
+TARGET_GROUPS := core
+core_TARGETS := libcore
+include ../Build.mk
+EOF
+expect_make_error "$FIXTURE/bad-static" \
+    'TARGET_GROUPS member is not a binary, shared library, or test' \
+    'static libraries are not group members'
+
+cat >"$FIXTURE/bad-external-name/Makefile" <<'EOF'
+BINS := libfoo
+EXTERNAL_STATICLIBS := libfoo
+libfoo_PATH = $(PKGDIR)/lib/libfoo.a
+libfoo_DIR = $(PROJECT_ROOT)
+include ../Build.mk
+EOF
+expect_make_error "$FIXTURE/bad-external-name" \
+    'EXTERNAL_STATICLIBS name collides with a target or group' \
+    'external static library names that match targets are rejected'
+
+cat >"$FIXTURE/bad-external-dir/Makefile" <<'EOF'
+BINS := app
+app_STATICLIBS = $(PKGDIR)/lib/libfoo.a
+EXTERNAL_STATICLIBS := libfoo
+libfoo_PATH = $(PKGDIR)/lib/libfoo.a
+include ../Build.mk
+EOF
+expect_make_error "$FIXTURE/bad-external-dir" \
+    'EXTERNAL_STATICLIBS libfoo has an empty _DIR' \
+    'linked external static libraries require a directory'
+
+cat >"$FIXTURE/bad-external-dup/Makefile" <<'EOF'
+BINS := app
+app_STATICLIBS = $(PKGDIR)/lib/same.a
+EXTERNAL_STATICLIBS := libfoo libbar
+libfoo_PATH = $(PKGDIR)/lib/same.a
+libfoo_DIR = $(PROJECT_ROOT)
+libbar_PATH = $(PKGDIR)/lib/same.a
+libbar_DIR = $(PROJECT_ROOT)
+include ../Build.mk
+EOF
+expect_make_error "$FIXTURE/bad-external-dup" \
+    'duplicate EXTERNAL_STATICLIBS path' \
+    'linked external static library paths are unique'
+
+cat >"$FIXTURE/bad-external-pkgdir/Makefile" <<'EOF'
+BINS := app
+app_STATICLIBS := $(PKGDIR)/lib/libfoo.a
+EXTERNAL_STATICLIBS := libfoo
+libfoo_PATH := $(PKGDIR)/lib/libfoo.a
+libfoo_DIR = $(PROJECT_ROOT)
+include ../Build.mk
+EOF
+expect_make_error "$FIXTURE/bad-external-pkgdir" \
+    'expanded with an empty PKGDIR' \
+    'immediate _PATH assignment with PKGDIR is rejected'
+
+cat >"$FIXTURE/unused-external/Makefile" <<'EOF'
+BINS := app
+EXTERNAL_STATICLIBS := libfoo
+libfoo_PATH = $(PKGDIR)/lib/libfoo.a
+include ../Build.mk
+EOF
+config_value "$FIXTURE/unused-external" PKGDIR >/dev/null
+pass 'unused external static libraries are ignored'
 
 "$MAKE" -C "$FIXTURE" check
 [ -f "$FIXTURE/functional-ran" ] || fail 'CHECKDIRS run after package completion'
