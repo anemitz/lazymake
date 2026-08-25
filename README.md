@@ -108,6 +108,18 @@ core_TARGETS := app SmokeTest
 core_STATICLIBS = $(PKGDIR)/lib/libcore.a
 ```
 
+- External archives: `EXTERNAL_STATICLIBS`, `<lib>_PATH`, and `<lib>_DIR`.
+  Names are the owning component's `STATICLIBS` targets. A path that appears in
+  an effective `_STATICLIBS` list is refreshed by recursing into `_DIR` for
+  that name, unless this Makefile itself lists the name in `STATICLIBS`. Parent
+  `SUBDIRS` still need an explicit producer-before-consumer order for `make -j`.
+
+```make
+EXTERNAL_STATICLIBS := libcore
+libcore_PATH = $(PKGDIR)/lib/libcore.a
+libcore_DIR := $(PROJECT_ROOT)/lib
+```
+
 | Command | Result |
 | --- | --- |
 | `make` | Package plus local tests |
@@ -136,6 +148,7 @@ make -C examples/shared_lib
 make -C examples/mixed_sources
 make -C examples/test_suite check
 make -C examples/target_groups check
+make -C examples/external_staticlibs
 ```
 
 Requires GNU Make 3.81+, a C/C++ toolchain, and basic host utilities. Validate

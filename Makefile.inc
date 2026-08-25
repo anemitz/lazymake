@@ -74,6 +74,11 @@ ifneq ($(strip $(UNKNOWN_GROUP_TARGETS)),)
     $(error TARGET_GROUPS member is not a binary, shared library, or test: $(UNKNOWN_GROUP_TARGETS))
 endif
 
+EXTERNAL_NAME_COLLISION := $(filter $(EXTERNAL_STATICLIBS),$(BINS) $(DYNLIBS) $(TESTS) $(TARGET_GROUPS))
+ifneq ($(strip $(EXTERNAL_NAME_COLLISION)),)
+    $(error EXTERNAL_STATICLIBS name collides with a target or group: $(EXTERNAL_NAME_COLLISION))
+endif
+
 bin_path = $(PKGDIR)/bin/$(1)
 dynlib_path = $(PKGDIR)/lib/$(1).so
 staticlib_path = $(PKGDIR)/lib/$(1).a
@@ -190,3 +195,32 @@ $(foreach target,$(BINS),$(eval $(call BIN_template,$(target))))
 $(foreach target,$(DYNLIBS),$(eval $(call DYNLIB_template,$(target))))
 $(foreach target,$(STATICLIBS),$(eval $(call STATICLIB_template,$(target))))
 $(foreach target,$(TESTS),$(eval $(call TEST_template,$(target))))
+
+# Archives this component links. External refresh rules fire only for paths
+# that appear here, so a shared table does not recurse from unrelated packages.
+LINKED_STATICLIBS := $(sort $(foreach target,$(BINS) $(DYNLIBS) $(TESTS),$(call target_staticlibs,$(target))))
+
+# Names this Makefile links but does not build. Membership in STATICLIBS is
+# the owner: that Makefile already has a real archive recipe.
+external_staticlib_used = $(if $(filter $(1),$(STATICLIBS)),,$(if $(filter $($(1)_PATH),$(LINKED_STATICLIBS)),$(1)))
+USED_EXTERNAL_STATICLIBS := $(strip $(foreach lib,$(EXTERNAL_STATICLIBS),$(call external_staticlib_used,$(lib))))
+
+$(foreach lib,$(USED_EXTERNAL_STATICLIBS),$(if $(strip $($(lib)_PATH)),,$(error EXTERNAL_STATICLIBS $(lib) has an empty _PATH)))
+$(foreach lib,$(USED_EXTERNAL_STATICLIBS),$(if $(strip $($(lib)_DIR)),,$(error EXTERNAL_STATICLIBS $(lib) has an empty _DIR)))
+
+USED_EXTERNAL_PATHS := $(foreach lib,$(USED_EXTERNAL_STATICLIBS),$($(lib)_PATH))
+$(foreach lib,$(USED_EXTERNAL_STATICLIBS),$(if $(filter-out 1,$(words $(filter $($(lib)_PATH),$(USED_EXTERNAL_PATHS)))),$(error duplicate EXTERNAL_STATICLIBS path: $($(lib)_PATH))))
+
+# A phony proxy always asks the owning Makefile to check freshness. That
+# Makefile and its dependency files know whether sources changed. The path
+# recipe does not touch the archive, so a no-op refresh does not relink.
+define EXTERNAL_STATICLIB_template
+.PHONY: lazymake-external-$(1)
+lazymake-external-$(1):
+	+$$(MAKE) -C "$$($(1)_DIR)" $(1)
+
+$$($(1)_PATH): lazymake-external-$(1)
+	@test -f "$$@"
+endef
+
+$(foreach lib,$(USED_EXTERNAL_STATICLIBS),$(eval $(call EXTERNAL_STATICLIB_template,$(lib))))
