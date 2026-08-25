@@ -207,6 +207,7 @@ USED_EXTERNAL_STATICLIBS := $(strip $(foreach lib,$(EXTERNAL_STATICLIBS),$(call 
 
 $(foreach lib,$(USED_EXTERNAL_STATICLIBS),$(if $(strip $($(lib)_PATH)),,$(error EXTERNAL_STATICLIBS $(lib) has an empty _PATH)))
 $(foreach lib,$(USED_EXTERNAL_STATICLIBS),$(if $(strip $($(lib)_DIR)),,$(error EXTERNAL_STATICLIBS $(lib) has an empty _DIR)))
+$(foreach lib,$(USED_EXTERNAL_STATICLIBS),$(if $(filter /lib/% /bin/%,$($(lib)_PATH)),$(error EXTERNAL_STATICLIBS $(lib)_PATH looks like it expanded with an empty PKGDIR; assign _PATH with =)))
 
 USED_EXTERNAL_PATHS := $(foreach lib,$(USED_EXTERNAL_STATICLIBS),$($(lib)_PATH))
 $(foreach lib,$(USED_EXTERNAL_STATICLIBS),$(if $(filter-out 1,$(words $(filter $($(lib)_PATH),$(USED_EXTERNAL_PATHS)))),$(error duplicate EXTERNAL_STATICLIBS path: $($(lib)_PATH))))

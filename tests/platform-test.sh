@@ -67,20 +67,6 @@ assert_not_contains()
     esac
 }
 
-config_value()
-{
-    component=$1
-    key=$2
-    shift 2
-
-    printf '%s\n' \
-        '.PHONY: _lazymake_test_value' \
-        '_lazymake_test_value:' \
-        "	@printf '%s\\n' '\$($key)'" |
-        "$MAKE" -C "$component" --no-print-directory \
-            -f Makefile -f - "$@" _lazymake_test_value
-}
-
 # Print a Make expression after the component Makefile has been included.
 expand_call()
 {
@@ -94,6 +80,15 @@ expand_call()
         "	@printf '%s\\n' '$expr'" |
         "$MAKE" -C "$component" --no-print-directory \
             -f Makefile -f - "$@" _lazymake_test_value
+}
+
+config_value()
+{
+    component=$1
+    key=$2
+    shift 2
+
+    expand_call "$component" "\$($key)" "$@"
 }
 
 expect_make_error()
@@ -186,6 +181,10 @@ touch "$ROOT/examples/external_staticlibs/lib/libext.cc"
 ext_rebuild=$("$MAKE" -C "$ROOT/examples/external_staticlibs/app")
 assert_contains "$ext_rebuild" 'libext.cc' 'consumer refresh rebuilds a stale producer source'
 assert_contains "$ext_rebuild" '/bin/extapp' 'consumer refresh relinks after the producer archive changes'
+
+ext_norebuild=$("$MAKE" -C "$ROOT/examples/external_staticlibs/app")
+assert_contains "$ext_norebuild" 'external_staticlibs/lib' 'unchanged external refresh still consults the owner'
+assert_not_contains "$ext_norebuild" '/bin/extapp' 'unchanged external archive does not relink the consumer'
 
 smoke_build=$(config_value "$ROOT/examples/test_suite" BUILDDIR)
 [ -x "$smoke_build/tests/SmokeTest" ] || fail 'test executable stays in the build tree'
@@ -434,7 +433,7 @@ assert_not_contains "$nested_link" 'libsupport.a' 'fixture groups skip unrelated
 
 mkdir -p "$FIXTURE/groups" "$FIXTURE/bad-unknown" "$FIXTURE/bad-collision" "$FIXTURE/bad-static" \
     "$FIXTURE/bad-external-name" "$FIXTURE/bad-external-dir" "$FIXTURE/bad-external-dup" \
-    "$FIXTURE/unused-external"
+    "$FIXTURE/bad-external-pkgdir" "$FIXTURE/unused-external"
 cat >"$FIXTURE/groups/Makefile" <<'EOF'
 BINS := app extra
 DYNLIBS := libplug
@@ -527,6 +526,18 @@ EOF
 expect_make_error "$FIXTURE/bad-external-dup" \
     'duplicate EXTERNAL_STATICLIBS path' \
     'linked external static library paths are unique'
+
+cat >"$FIXTURE/bad-external-pkgdir/Makefile" <<'EOF'
+BINS := app
+app_STATICLIBS := $(PKGDIR)/lib/libfoo.a
+EXTERNAL_STATICLIBS := libfoo
+libfoo_PATH := $(PKGDIR)/lib/libfoo.a
+libfoo_DIR = $(PROJECT_ROOT)
+include ../Build.mk
+EOF
+expect_make_error "$FIXTURE/bad-external-pkgdir" \
+    'expanded with an empty PKGDIR' \
+    'immediate _PATH assignment with PKGDIR is rejected'
 
 cat >"$FIXTURE/unused-external/Makefile" <<'EOF'
 BINS := app

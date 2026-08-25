@@ -114,7 +114,8 @@ core_STATICLIBS = $(PKGDIR)/lib/libcore.a
   that name, unless this Makefile itself lists the name in `STATICLIBS`. Use
   `=` when `_PATH` contains `$(PKGDIR)` or `_DIR` contains `$(PROJECT_ROOT)`.
   Parent `SUBDIRS` still need an explicit producer-before-consumer order for
-  `make -j`.
+  `make -j`. Concurrent standalone consumer builds that share a stale archive
+  can both recurse into the owner and race on `ar`; that is out of contract.
 
 ```make
 EXTERNAL_STATICLIBS := libcore
