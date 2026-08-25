@@ -1,12 +1,14 @@
 # Platform test harness
 
-The harness builds the binary, shared-library, mixed-source, and test-suite
-examples. It also exercises a temporary multi-component project to verify:
+The harness builds the binary, shared-library, mixed-source, test-suite, and
+target-group examples. It also exercises a temporary multi-component project to
+verify:
 
 - Centrally namespaced, target-owned objects
 - Default and explicit source declarations
 - Binaries, shared libraries, static libraries, and tests
 - Standard and target-specific compiler and linker variables
+- Named static-library target groups and unrelated-target relink isolation
 - Complete resources and generated package content
 - Production `SUBDIRS` and isolated `CHECKDIRS`
 - Aggregated test failures and test environments

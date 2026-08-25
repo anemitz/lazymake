@@ -51,10 +51,27 @@ ALL_TARGETS := $(BINS) $(DYNLIBS) $(STATICLIBS) $(TESTS)
 target_sources = $(if $(strip $($(1)_SOURCES)),$($(1)_SOURCES),$(1).cc)
 target_objects = $(foreach source,$(call target_sources,$(1)),$(BUILDDIR)/$(1)/$(source).o)
 
+# Per-target archives, then matching groups in TARGET_GROUPS order. Recursive
+# values expand here so $(PKGDIR) works when assigned with =. Static-library
+# targets are not group members; they are not linked.
+target_staticlibs = $(strip $($(1)_STATICLIBS) $(foreach group,$(TARGET_GROUPS),$(if $(filter $(1),$($(group)_TARGETS)),$($(group)_STATICLIBS))))
+
 ALL_SOURCES := $(foreach target,$(ALL_TARGETS),$(call target_sources,$(target)))
 UNSUPPORTED_SOURCES := $(filter-out %.c %.cc %.cpp %.cxx,$(ALL_SOURCES))
 ifneq ($(strip $(UNSUPPORTED_SOURCES)),)
     $(error unsupported source extension: $(UNSUPPORTED_SOURCES))
+endif
+
+# Group names share the <name>_STATICLIBS form with targets, so a collision
+# would make one variable mean two things.
+GROUP_NAME_COLLISION := $(filter $(TARGET_GROUPS),$(ALL_TARGETS))
+ifneq ($(strip $(GROUP_NAME_COLLISION)),)
+    $(error TARGET_GROUPS name collides with a target: $(GROUP_NAME_COLLISION))
+endif
+
+UNKNOWN_GROUP_TARGETS := $(filter-out $(BINS) $(DYNLIBS) $(TESTS),$(foreach group,$(TARGET_GROUPS),$($(group)_TARGETS)))
+ifneq ($(strip $(UNKNOWN_GROUP_TARGETS)),)
+    $(error TARGET_GROUPS member is not a binary, shared library, or test: $(UNKNOWN_GROUP_TARGETS))
 endif
 
 bin_path = $(PKGDIR)/bin/$(1)
@@ -136,18 +153,18 @@ define BIN_template
 .PHONY: $(1)
 $(1): $(call bin_path,$(1))
 
-$(call bin_path,$(1)): $$(call target_objects,$(1)) $$($(1)_STATICLIBS)
+$(call bin_path,$(1)): $$(call target_objects,$(1)) $$(call target_staticlibs,$(1))
 	@mkdir -p "$$(@D)"
-	$$(CXX) $$(call target_objects,$(1)) $$(LAZYMAKE_LDFLAGS) $$(LDFLAGS) $$($(1)_LDFLAGS) $$($(1)_STATICLIBS) $$(LDLIBS) $$($(1)_LDLIBS) -o "$$@"
+	$$(CXX) $$(call target_objects,$(1)) $$(LAZYMAKE_LDFLAGS) $$(LDFLAGS) $$($(1)_LDFLAGS) $$(call target_staticlibs,$(1)) $$(LDLIBS) $$($(1)_LDLIBS) -o "$$@"
 endef
 
 define DYNLIB_template
 .PHONY: $(1)
 $(1): $(call dynlib_path,$(1))
 
-$(call dynlib_path,$(1)): $$(call target_objects,$(1)) $$($(1)_STATICLIBS)
+$(call dynlib_path,$(1)): $$(call target_objects,$(1)) $$(call target_staticlibs,$(1))
 	@mkdir -p "$$(@D)"
-	$$(CXX) $$(SHARED_LINK_FLAGS) $$(SHARED_INSTALL_NAME) -o "$$@" $$(call target_objects,$(1)) $$(LAZYMAKE_LDFLAGS) $$(LDFLAGS) $$($(1)_LDFLAGS) $$($(1)_STATICLIBS) $$(LDLIBS) $$($(1)_LDLIBS)
+	$$(CXX) $$(SHARED_LINK_FLAGS) $$(SHARED_INSTALL_NAME) -o "$$@" $$(call target_objects,$(1)) $$(LAZYMAKE_LDFLAGS) $$(LDFLAGS) $$($(1)_LDFLAGS) $$(call target_staticlibs,$(1)) $$(LDLIBS) $$($(1)_LDLIBS)
 endef
 
 define STATICLIB_template
@@ -164,9 +181,9 @@ define TEST_template
 .PHONY: $(1)
 $(1): $(call test_path,$(1))
 
-$(call test_path,$(1)): $$(call target_objects,$(1)) $$($(1)_STATICLIBS)
+$(call test_path,$(1)): $$(call target_objects,$(1)) $$(call target_staticlibs,$(1))
 	@mkdir -p "$$(@D)"
-	$$(CXX) $$(call target_objects,$(1)) $$(LAZYMAKE_LDFLAGS) $$(LDFLAGS) $$($(1)_LDFLAGS) $$($(1)_STATICLIBS) $$(LDLIBS) $$($(1)_LDLIBS) -o "$$@"
+	$$(CXX) $$(call target_objects,$(1)) $$(LAZYMAKE_LDFLAGS) $$(LDFLAGS) $$($(1)_LDFLAGS) $$(call target_staticlibs,$(1)) $$(LDLIBS) $$($(1)_LDLIBS) -o "$$@"
 endef
 
 $(foreach target,$(BINS),$(eval $(call BIN_template,$(target))))

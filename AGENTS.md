@@ -28,8 +28,9 @@ include ../Makefile.inc
 ```
 
 The public declaration vocabulary is `BINS`, `DYNLIBS`, `STATICLIBS`, `TESTS`,
-`<target>_SOURCES`, `SUBDIRS`, `CHECKDIRS`, `RESOURCES`, `BUILD_VARIANT`, standard
-compiler and linker variables, and their target-specific forms. Preserve this small
+`<target>_SOURCES`, `TARGET_GROUPS`, `<group>_TARGETS`, `<group>_STATICLIBS`,
+`SUBDIRS`, `CHECKDIRS`, `RESOURCES`, `BUILD_VARIANT`, standard compiler and
+linker variables, and their target-specific forms. Preserve this small
 interface and the rule that the common include comes last. Treat the README and the
 runnable projects under `examples/` as the authoritative usage contract; update and
 test them with every public behavior change.
