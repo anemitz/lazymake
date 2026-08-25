@@ -496,7 +496,7 @@ cat >"$FIXTURE/bad-external-name/Makefile" <<'EOF'
 BINS := libfoo
 EXTERNAL_STATICLIBS := libfoo
 libfoo_PATH = $(PKGDIR)/lib/libfoo.a
-libfoo_DIR := $(PROJECT_ROOT)
+libfoo_DIR = $(PROJECT_ROOT)
 include ../Build.mk
 EOF
 expect_make_error "$FIXTURE/bad-external-name" \
@@ -519,9 +519,9 @@ BINS := app
 app_STATICLIBS = $(PKGDIR)/lib/same.a
 EXTERNAL_STATICLIBS := libfoo libbar
 libfoo_PATH = $(PKGDIR)/lib/same.a
-libfoo_DIR := $(PROJECT_ROOT)
+libfoo_DIR = $(PROJECT_ROOT)
 libbar_PATH = $(PKGDIR)/lib/same.a
-libbar_DIR := $(PROJECT_ROOT)
+libbar_DIR = $(PROJECT_ROOT)
 include ../Build.mk
 EOF
 expect_make_error "$FIXTURE/bad-external-dup" \
