@@ -9,8 +9,13 @@
 PROJECT_ROOT ?= $(patsubst %/,%,$(dir $(lastword $(MAKEFILE_LIST))))
 PROJECT_ROOT := $(abspath $(PROJECT_ROOT))
 
+# Resolve the host once. Recursive Makes inherit it instead of forking again.
 HOST_OS ?= $(shell uname -s)
+HOST_OS := $(HOST_OS)
 HOST_ARCH ?= $(shell uname -m)
+HOST_ARCH := $(HOST_ARCH)
+export HOST_OS HOST_ARCH
+
 BUILD_VARIANT ?= release
 
 BUILD_ROOT ?= $(PROJECT_ROOT)/build/$(HOST_OS)-$(HOST_ARCH)/$(BUILD_VARIANT)
@@ -49,7 +54,10 @@ ALL_TARGETS := $(BINS) $(DYNLIBS) $(STATICLIBS) $(TESTS)
 
 # A target named foo builds foo.cc unless it declares foo_SOURCES.
 target_sources = $(if $(strip $($(1)_SOURCES)),$($(1)_SOURCES),$(1).cc)
-target_objects = $(foreach source,$(call target_sources,$(1)),$(BUILDDIR)/$(1)/$(source).o)
+# ../ cannot reach an object path: it would leave the target's directory, and
+# targets sharing that source would then write one file.
+object_path = $(BUILDDIR)/$(1)/$(subst ../,__/,$(2)).o
+target_objects = $(foreach source,$(call target_sources,$(1)),$(call object_path,$(1),$(source)))
 
 # Per-target archives, then matching groups in TARGET_GROUPS order. Recursive
 # values expand here so $(PKGDIR) works when assigned with =. Static-library
@@ -105,19 +113,26 @@ ifneq ($(strip $(RESOURCES)),)
 	done; exit $$status
 endif
 
+# Everything in all finishes first, so no suite races a link. The second Make
+# keeps going past a failed suite so the status reports all of them. Suites
+# overlap under -j; tests within a component stay serial and in order.
+CHECK_SUITES := lazymake-check-tests $(addprefix lazymake-check-dir-,$(CHECKDIRS))
+
 check: all
-ifneq ($(strip $(CHECKDIRS)),)
-	@status=0; \
-	$(foreach test,$(TESTS),$(CHECK_ENV) "$(call test_path,$(test))" || status=1;) \
-	$(foreach dir,$(CHECKDIRS),$(MAKE) -C "$(dir)" check || status=1;) \
-	exit $$status
-else
-    ifneq ($(strip $(TESTS)),)
-	@status=0; \
-	$(foreach test,$(TESTS),$(CHECK_ENV) "$(call test_path,$(test))" || status=1;) \
-	exit $$status
-    endif
+ifneq ($(strip $(TESTS) $(CHECKDIRS)),)
+	+@$(MAKE) -k lazymake-check-suites
 endif
+
+.PHONY: lazymake-check-suites $(CHECK_SUITES)
+lazymake-check-suites: $(CHECK_SUITES)
+
+lazymake-check-tests:
+	@status=0; \
+	$(foreach test,$(TESTS),$(CHECK_ENV) "$(call test_path,$(test))" || status=1;) \
+	exit $$status
+
+$(addprefix lazymake-check-dir-,$(CHECKDIRS)): lazymake-check-dir-%:
+	+@$(MAKE) -C "$*" check
 
 ifeq ($(CURDIR),$(PROJECT_ROOT))
     CLEAN_ROOT := $(BUILD_ROOT)
@@ -138,7 +153,7 @@ $(SUBDIRS):
 # Compile one object for each target/source pair. Keeping the source extension
 # in the object name prevents foo.c and foo.cc from colliding.
 define OBJECT_template
-$(BUILDDIR)/$(1)/$(2).o: $(2)
+$(call object_path,$(1),$(2)): $(2)
 	@mkdir -p "$$(@D)"
 	$(if $(filter %.c,$(2)),$$(CC) -c $$(LAZYMAKE_CPPFLAGS) $$(CPPFLAGS) $$(LAZYMAKE_CFLAGS) $$(CFLAGS) $$($(1)_CPPFLAGS) $$($(1)_CFLAGS) $(3),$$(CXX) -c $$(LAZYMAKE_CPPFLAGS) $$(CPPFLAGS) $$(LAZYMAKE_CXXFLAGS) $$(CXXFLAGS) $$($(1)_CPPFLAGS) $$($(1)_CXXFLAGS) $(3)) -MMD -MP -MF "$$@.d" -MT "$$@" "$$<" -o "$$@"
 endef

@@ -246,7 +246,16 @@ mkdir -p \
     "$FIXTURE/assets/web" \
     "$FIXTURE/tests" \
     "$FIXTURE/functional" \
-    "$FIXTURE/failure"
+    "$FIXTURE/failure" \
+    "$FIXTURE/outside/app" \
+    "$FIXTURE/outside/shared" \
+    "$FIXTURE/suites/failing" \
+    "$FIXTURE/suites/passing" \
+    "$FIXTURE/overlap/one" \
+    "$FIXTURE/overlap/two" \
+    "$FIXTURE/hooked" \
+    "$FIXTURE/broken" \
+    "$FIXTURE/bin"
 
 cat >"$FIXTURE/Build.mk" <<'EOF'
 PROJECT_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
@@ -406,7 +415,144 @@ int main(void)
 }
 EOF
 
-"$MAKE" -j8 -C "$FIXTURE" package
+cat >"$FIXTURE/outside/app/Makefile" <<'EOF'
+BINS := first second
+first_SOURCES := main.cc ../shared/value.cc
+first_CXXFLAGS := -DVALUE=1
+second_SOURCES := main.cc ../shared/value.cc
+second_CXXFLAGS := -DVALUE=2
+
+include ../../Build.mk
+EOF
+
+cat >"$FIXTURE/outside/app/main.cc" <<'EOF'
+extern int shared_value(void);
+int main(void) { return shared_value() == VALUE ? 0 : 1; }
+EOF
+
+cat >"$FIXTURE/outside/shared/value.cc" <<'EOF'
+int shared_value(void) { return VALUE; }
+EOF
+
+cat >"$FIXTURE/suites/Makefile" <<'EOF'
+TESTS := OrderTest
+CHECKDIRS := failing passing
+CHECK_ENV = ORDER_LOG="$(PROJECT_ROOT)/order"
+
+include ../Build.mk
+EOF
+
+cat >"$FIXTURE/suites/OrderTest.cc" <<'EOF'
+#include <stdio.h>
+#include <stdlib.h>
+int main(void)
+{
+    FILE *log = fopen(getenv("ORDER_LOG"), "a");
+    if (log == 0) return 1;
+    fputs("tests\n", log);
+    fclose(log);
+    return 0;
+}
+EOF
+
+cat >"$FIXTURE/suites/failing/Makefile" <<'EOF'
+.PHONY: check
+check:
+	@printf 'failing\n' >>"$(PROJECT_ROOT)/order"
+	@exit 1
+
+include ../../Build.mk
+EOF
+
+cat >"$FIXTURE/suites/passing/Makefile" <<'EOF'
+.PHONY: check
+check:
+	@printf 'passing\n' >>"$(PROJECT_ROOT)/order"
+
+include ../../Build.mk
+EOF
+
+cat >"$FIXTURE/overlap/Makefile" <<'EOF'
+CHECKDIRS := one two
+
+include ../Build.mk
+EOF
+
+# Each suite passes only once the other has started, so they must overlap.
+cat >"$FIXTURE/overlap/suite.mk" <<'EOF'
+.PHONY: check
+check:
+	@touch "$(PROJECT_ROOT)/$(SELF)-started"
+	@tries=0; while [ ! -f "$(PROJECT_ROOT)/$(PEER)-started" ]; do \
+		tries=$$((tries + 1)); [ $$tries -lt 15 ] || exit 1; sleep 1; \
+	done
+
+include ../../Build.mk
+EOF
+printf 'SELF := one\nPEER := two\ninclude ../suite.mk\n' >"$FIXTURE/overlap/one/Makefile"
+printf 'SELF := two\nPEER := one\ninclude ../suite.mk\n' >"$FIXTURE/overlap/two/Makefile"
+
+cat >"$FIXTURE/hooked/Makefile" <<'EOF'
+TESTS := HookedTest
+CHECK_ENV = HOOK_MARKER="$(PROJECT_ROOT)/hook-ran"
+
+.PHONY: hook
+check: hook
+hook:
+	@touch "$(PROJECT_ROOT)/hook-ran"
+
+include ../Build.mk
+EOF
+
+cat >"$FIXTURE/hooked/HookedTest.cc" <<'EOF'
+#include <stdio.h>
+#include <stdlib.h>
+int main(void)
+{
+    FILE *marker = fopen(getenv("HOOK_MARKER"), "r");
+    if (marker == 0) return 1;
+    fclose(marker);
+    return 0;
+}
+EOF
+
+cat >"$FIXTURE/broken/Makefile" <<'EOF'
+BINS := broken
+TESTS := NeverTest
+CHECK_ENV = NEVER_MARKER="$(PROJECT_ROOT)/never-ran"
+
+include ../Build.mk
+EOF
+
+cat >"$FIXTURE/broken/broken.cc" <<'EOF'
+#error this binary never builds
+EOF
+
+cat >"$FIXTURE/broken/NeverTest.cc" <<'EOF'
+#include <stdio.h>
+#include <stdlib.h>
+int main(void)
+{
+    FILE *marker = fopen(getenv("NEVER_MARKER"), "w");
+    if (marker != 0) fclose(marker);
+    return 0;
+}
+EOF
+
+real_uname=$(command -v uname)
+cat >"$FIXTURE/bin/uname" <<EOF
+#!/bin/sh
+printf '%s\n' "\$1" >>"$FIXTURE/uname-calls"
+exec "$real_uname" "\$@"
+EOF
+chmod +x "$FIXTURE/bin/uname"
+
+(
+    unset HOST_OS HOST_ARCH
+    PATH="$FIXTURE/bin:$PATH" "$MAKE" -j8 -C "$FIXTURE" package
+)
+assert_equal "$(sort "$FIXTURE/uname-calls" | tr '\n' ' ')" '-m -s ' 'recursive Makes detect the host once'
+
 fixture_package=$(config_value "$FIXTURE/app" PKGDIR)
 
 [ -x "$fixture_package/bin/app" ] || fail 'package includes default and explicit binaries'
@@ -548,9 +694,43 @@ EOF
 config_value "$FIXTURE/unused-external" PKGDIR >/dev/null
 pass 'unused external static libraries are ignored'
 
-"$MAKE" -C "$FIXTURE" check
+"$MAKE" -j8 -C "$FIXTURE/outside/app"
+"$fixture_package/bin/first" || fail 'first target owns its object for an outside source'
+"$fixture_package/bin/second" || fail 'second target owns its object for an outside source'
+pass 'targets sharing an outside source keep their own flags'
+outside_build=$(config_value "$FIXTURE/outside/app" BUILDDIR)
+[ -f "$outside_build/first/__/shared/value.cc.o" ] || fail 'outside source object stays under its target'
+[ ! -e "$outside_build/shared" ] || fail 'outside source object leaves its target'
+pass 'outside source objects stay under their targets'
+
+"$MAKE" -C "$FIXTURE" distclean
+"$MAKE" -j8 -C "$FIXTURE" check
 [ -f "$FIXTURE/functional-ran" ] || fail 'CHECKDIRS run after package completion'
 pass 'CHECKDIRS run after package completion'
+
+if "$MAKE" -C "$FIXTURE/suites" check; then
+    fail 'check fails when a CHECKDIRS suite fails'
+fi
+assert_equal "$(tr '\n' ' ' <"$FIXTURE/order")" 'tests failing passing ' 'serial check keeps order past a failed suite'
+
+rm -f "$FIXTURE/order"
+if "$MAKE" -j4 -C "$FIXTURE/suites" check; then
+    fail 'parallel check fails when a CHECKDIRS suite fails'
+fi
+grep -q passing "$FIXTURE/order" || fail 'parallel check runs later suites past a failed suite'
+pass 'parallel check runs later suites past a failed suite'
+
+"$MAKE" -j2 -C "$FIXTURE/overlap" check || fail 'check overlaps suites under -j'
+pass 'check overlaps suites under -j'
+
+"$MAKE" -j8 -C "$FIXTURE/hooked" check || fail 'check prerequisites run before tests'
+pass 'check prerequisites run before tests'
+
+if "$MAKE" -j4 -C "$FIXTURE/broken" check; then
+    fail 'check fails when the build fails'
+fi
+[ ! -e "$FIXTURE/never-ran" ] || fail 'a failed build runs no tests'
+pass 'a failed build runs no tests'
 
 if "$MAKE" -C "$FIXTURE/failure" check; then
     fail 'check fails when a declared test fails'

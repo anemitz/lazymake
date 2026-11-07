@@ -89,7 +89,8 @@ make check    production package + every test
 - Include `Makefile.inc` last. Its location defines the project root.
 - Targets: `BINS`, `DYNLIBS`, `STATICLIBS`, and `TESTS`.
 - Composition: `SUBDIRS`, `CHECKDIRS`, and `RESOURCES`.
-- Sources: `<target>_SOURCES`; defaults to `<target>.cc`.
+- Sources: `<target>_SOURCES`; defaults to `<target>.cc`. A source outside the
+  component, such as `../shared/Probe.cc`, still gets one object per target.
 - Extensions: `.c`, `.cc`, `.cpp`, and `.cxx`.
 - Global settings: `CC`, `CXX`, `CPPFLAGS`, `CFLAGS`, `CXXFLAGS`, `LDFLAGS`,
   and `LDLIBS`.
@@ -106,6 +107,19 @@ make check    production package + every test
 TARGET_GROUPS := core
 core_TARGETS := app SmokeTest
 core_STATICLIBS = $(PKGDIR)/lib/libcore.a
+```
+
+- Checks: `make check` finishes `all`, then runs the component's `TESTS` in
+  order and each `CHECKDIRS` entry, and reports every failure. `-j` overlaps
+  those suites, so run without it when they cannot share a host. Tests within a
+  component stay serial. `CHECK_ENV` prefixes each test command. `check: <goal>`
+  runs a goal before the tests. A component with no `TESTS` or `CHECKDIRS` may
+  write its own `check:` recipe.
+
+```make
+TESTS := ParserTest
+CHECK_ENV = FIXTURES="$(PROJECT_ROOT)/fixtures"
+check: fixtures
 ```
 
 - External archives: `EXTERNAL_STATICLIBS`, `<lib>_PATH`, and `<lib>_DIR`.
@@ -127,7 +141,7 @@ libcore_DIR = $(PROJECT_ROOT)/lib
 | --- | --- |
 | `make` | Package plus local tests |
 | `make package` | Production targets, resources, and `SUBDIRS` |
-| `make check` | Build and run all tests |
+| `make check` | Build, then run all tests; `-j` overlaps suites |
 | `make <name>` | One declared target |
 | `make clean` | Current component's build state |
 | `make distclean` | Every build and package variant |
