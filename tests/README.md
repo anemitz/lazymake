@@ -4,7 +4,9 @@ The harness builds the binary, shared-library, mixed-source, test-suite,
 target-group, and external-static-library examples. It also exercises a
 temporary multi-component project to verify:
 
-- Centrally namespaced, target-owned objects
+- Centrally namespaced, target-owned objects, including sources outside the
+  component
+- One host detection across recursive Makes
 - Default and explicit source declarations
 - Binaries, shared libraries, static libraries, and tests
 - Standard and target-specific compiler and linker variables
@@ -13,6 +15,7 @@ temporary multi-component project to verify:
 - Complete resources and generated package content
 - Production `SUBDIRS` and isolated `CHECKDIRS`
 - Aggregated test failures and test environments
+- Check order, overlapping suites, prerequisites, and build failures
 - Parallel builds, header dependencies, and incremental behavior
 - Build variant propagation and cleanup semantics
 
