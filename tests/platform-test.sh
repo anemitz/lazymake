@@ -232,6 +232,8 @@ note_repeat=$("$MAKE" -C "$hello_app" "CXXFLAGS=$note")
 assert_not_contains "$note_repeat" ' -c ' 'records reproduce quotes, hashes, commas, and dollars'
 note_change=$("$MAKE" -C "$hello_app" "CXXFLAGS=$other_note")
 assert_contains "$note_change" ' -c ' 'records keep text after a hash and beside a dollar'
+# Restore the default command so only the header edit below can rebuild.
+"$MAKE" -C "$hello_app"
 
 sleep 1
 cp "$HELLO_HEADER" "$HELLO_HEADER.orig"
