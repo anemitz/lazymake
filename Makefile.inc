@@ -91,6 +91,7 @@ bin_path = $(PKGDIR)/bin/$(1)
 dynlib_path = $(PKGDIR)/lib/$(1).so
 staticlib_path = $(PKGDIR)/lib/$(1).a
 test_path = $(BUILDDIR)/tests/$(1)
+target_record = $(BUILDDIR)/$(1).cmd
 
 BIN_OUTPUTS := $(foreach target,$(BINS),$(call bin_path,$(target)))
 DYNLIB_OUTPUTS := $(foreach target,$(DYNLIBS),$(call dynlib_path,$(target)))
@@ -150,12 +151,37 @@ distclean:
 $(SUBDIRS):
 	+@$(MAKE) -C "$@" package
 
+# Each output records the command of its last successful build. An output
+# whose command no longer matches gains a phony prerequisite, so changed flags,
+# sources, or link inputs rebuild it. Comparing during secondary expansion
+# keeps -n, -q, and -B accurate. That expansion has no $<, and it cannot see a
+# variable inherited from another target's target-specific assignment. The
+# record holds the text the expansion saw, so such a variable goes uncompared
+# rather than rebuilding on every run.
+.SECONDEXPANSION:
+.PHONY: lazymake-command-changed
+
+LAZYMAKE_HASH := \#
+# Escape text so a makefile assignment reproduces it.
+lazymake_escape = $(subst $(LAZYMAKE_HASH),$$(LAZYMAKE_HASH),$(subst $$,$$$$,$(1)))
+# Empty only when the two texts are equal.
+lazymake_differs = $(subst $(1),,$(2))$(subst $(2),,$(1))
+
+lazymake_command_changed = $(eval lazymake_current.$@ := $(call lazymake_escape,$(strip $(lazymake_command.$@))))$(if $(call lazymake_differs,$(lazymake_current.$@),$(strip $(lazymake_built.$@))),lazymake-command-changed)
+
+# Run an output's command, then record it in $(1).
+define lazymake_build
+@mkdir -p "$(@D)"
+$(lazymake_command.$@)
+@printf '%s\n' '$(subst ','\'',lazymake_built.$@ := $(call lazymake_escape,$(lazymake_current.$@)))' >"$(1)"
+endef
+
 # Compile one object for each target/source pair. Keeping the source extension
 # in the object name prevents foo.c and foo.cc from colliding.
 define OBJECT_template
-$(call object_path,$(1),$(2)): $(2)
-	@mkdir -p "$$(@D)"
-	$(if $(filter %.c,$(2)),$$(CC) -c $$(LAZYMAKE_CPPFLAGS) $$(CPPFLAGS) $$(LAZYMAKE_CFLAGS) $$(CFLAGS) $$($(1)_CPPFLAGS) $$($(1)_CFLAGS) $(3),$$(CXX) -c $$(LAZYMAKE_CPPFLAGS) $$(CPPFLAGS) $$(LAZYMAKE_CXXFLAGS) $$(CXXFLAGS) $$($(1)_CPPFLAGS) $$($(1)_CXXFLAGS) $(3)) -MMD -MP -MF "$$@.d" -MT "$$@" "$$<" -o "$$@"
+lazymake_command.$(call object_path,$(1),$(2)) = $(if $(filter %.c,$(2)),$$(CC) -c $$(LAZYMAKE_CPPFLAGS) $$(CPPFLAGS) $$(LAZYMAKE_CFLAGS) $$(CFLAGS) $$($(1)_CPPFLAGS) $$($(1)_CFLAGS) $(3),$$(CXX) -c $$(LAZYMAKE_CPPFLAGS) $$(CPPFLAGS) $$(LAZYMAKE_CXXFLAGS) $$(CXXFLAGS) $$($(1)_CPPFLAGS) $$($(1)_CXXFLAGS) $(3)) -MMD -MP -MF "$$@.d" -MT "$$@" "$(2)" -o "$$@"
+$(call object_path,$(1),$(2)): $(2) $$$$(lazymake_command_changed)
+	$$(call lazymake_build,$$@.cmd)
 endef
 
 define TARGET_OBJECTS_template
@@ -167,43 +193,46 @@ $(foreach target,$(DYNLIBS),$(eval $(call TARGET_OBJECTS_template,$(target),-fPI
 $(foreach target,$(STATICLIBS),$(eval $(call TARGET_OBJECTS_template,$(target),)))
 $(foreach target,$(TESTS),$(eval $(call TARGET_OBJECTS_template,$(target),)))
 
--include $(addsuffix .d,$(foreach target,$(ALL_TARGETS),$(call target_objects,$(target))))
+-include $(foreach object,$(foreach target,$(ALL_TARGETS),$(call target_objects,$(target))),$(object).d $(object).cmd)
+-include $(foreach target,$(ALL_TARGETS),$(call target_record,$(target)))
 
 define BIN_template
 .PHONY: $(1)
 $(1): $(call bin_path,$(1))
 
-$(call bin_path,$(1)): $$(call target_objects,$(1)) $$(call target_staticlibs,$(1))
-	@mkdir -p "$$(@D)"
-	$$(CXX) $$(call target_objects,$(1)) $$(LAZYMAKE_LDFLAGS) $$(LDFLAGS) $$($(1)_LDFLAGS) $$(call target_staticlibs,$(1)) $$(LDLIBS) $$($(1)_LDLIBS) -o "$$@"
+lazymake_command.$(call bin_path,$(1)) = $$(CXX) $$(call target_objects,$(1)) $$(LAZYMAKE_LDFLAGS) $$(LDFLAGS) $$($(1)_LDFLAGS) $$(call target_staticlibs,$(1)) $$(LDLIBS) $$($(1)_LDLIBS) -o "$$@"
+$(call bin_path,$(1)): $$(call target_objects,$(1)) $$(call target_staticlibs,$(1)) $$$$(lazymake_command_changed)
+	$$(call lazymake_build,$(call target_record,$(1)))
 endef
 
 define DYNLIB_template
 .PHONY: $(1)
 $(1): $(call dynlib_path,$(1))
 
-$(call dynlib_path,$(1)): $$(call target_objects,$(1)) $$(call target_staticlibs,$(1))
-	@mkdir -p "$$(@D)"
-	$$(CXX) $$(SHARED_LINK_FLAGS) $$(SHARED_INSTALL_NAME) -o "$$@" $$(call target_objects,$(1)) $$(LAZYMAKE_LDFLAGS) $$(LDFLAGS) $$($(1)_LDFLAGS) $$(call target_staticlibs,$(1)) $$(LDLIBS) $$($(1)_LDLIBS)
+lazymake_command.$(call dynlib_path,$(1)) = $$(CXX) $$(SHARED_LINK_FLAGS) $$(SHARED_INSTALL_NAME) -o "$$@" $$(call target_objects,$(1)) $$(LAZYMAKE_LDFLAGS) $$(LDFLAGS) $$($(1)_LDFLAGS) $$(call target_staticlibs,$(1)) $$(LDLIBS) $$($(1)_LDLIBS)
+$(call dynlib_path,$(1)): $$(call target_objects,$(1)) $$(call target_staticlibs,$(1)) $$$$(lazymake_command_changed)
+	$$(call lazymake_build,$(call target_record,$(1)))
 endef
 
+# Removing the archive first drops members whose sources the target no longer
+# lists.
 define STATICLIB_template
 .PHONY: $(1)
 $(1): $(call staticlib_path,$(1))
 
-$(call staticlib_path,$(1)): $$(call target_objects,$(1))
-	@mkdir -p "$$(@D)"
+lazymake_command.$(call staticlib_path,$(1)) = $$(AR) rcs "$$@" $$(call target_objects,$(1))
+$(call staticlib_path,$(1)): $$(call target_objects,$(1)) $$$$(lazymake_command_changed)
 	@rm -f "$$@"
-	$$(AR) rcs "$$@" $$(call target_objects,$(1))
+	$$(call lazymake_build,$(call target_record,$(1)))
 endef
 
 define TEST_template
 .PHONY: $(1)
 $(1): $(call test_path,$(1))
 
-$(call test_path,$(1)): $$(call target_objects,$(1)) $$(call target_staticlibs,$(1))
-	@mkdir -p "$$(@D)"
-	$$(CXX) $$(call target_objects,$(1)) $$(LAZYMAKE_LDFLAGS) $$(LDFLAGS) $$($(1)_LDFLAGS) $$(call target_staticlibs,$(1)) $$(LDLIBS) $$($(1)_LDLIBS) -o "$$@"
+lazymake_command.$(call test_path,$(1)) = $$(CXX) $$(call target_objects,$(1)) $$(LAZYMAKE_LDFLAGS) $$(LDFLAGS) $$($(1)_LDFLAGS) $$(call target_staticlibs,$(1)) $$(LDLIBS) $$($(1)_LDLIBS) -o "$$@"
+$(call test_path,$(1)): $$(call target_objects,$(1)) $$(call target_staticlibs,$(1)) $$$$(lazymake_command_changed)
+	$$(call lazymake_build,$(call target_record,$(1)))
 endef
 
 $(foreach target,$(BINS),$(eval $(call BIN_template,$(target))))
