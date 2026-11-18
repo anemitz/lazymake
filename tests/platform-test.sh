@@ -286,6 +286,9 @@ mkdir -p \
     "$FIXTURE/overlap/two" \
     "$FIXTURE/hooked" \
     "$FIXTURE/broken" \
+    "$FIXTURE/bench" \
+    "$FIXTURE/prereq" \
+    "$FIXTURE/external" \
     "$FIXTURE/bin"
 
 cat >"$FIXTURE/Build.mk" <<'EOF'
@@ -294,11 +297,46 @@ CPPFLAGS += -I$(PROJECT_ROOT) -D$(HOST_OS)
 include $(PROJECT_ROOT)/Makefile.inc
 EOF
 
+# OPTIONALDIRS also names app, which SUBDIRS already reaches.
 cat >"$FIXTURE/Makefile" <<'EOF'
 SUBDIRS := app assets
 CHECKDIRS := tests functional
+OPTIONALDIRS := bench prereq external app
 
 include Build.mk
+EOF
+
+# An optional component that cannot compile proves package and check skip it.
+cat >"$FIXTURE/bench/Makefile" <<'EOF'
+BINS := bench
+
+include ../Build.mk
+EOF
+printf '#error optional components build only on request\n' >"$FIXTURE/bench/bench.cc"
+
+# The generated header is found through -isystem, so -MMD omits it.
+cat >"$FIXTURE/prereq/Makefile" <<'EOF'
+BINS := prereq
+GENERATED = $(BUILD_ROOT)/generated/include/generated.h
+COMPILE_PREREQUISITES = $(GENERATED)
+CPPFLAGS += -isystem $(BUILD_ROOT)/generated/include
+
+include ../Build.mk
+
+$(GENERATED):
+	@mkdir -p "$(@D)"
+	@printf '#define GENERATED_VALUE 7\n' >"$@"
+EOF
+
+cat >"$FIXTURE/prereq/prereq.cc" <<'EOF'
+#include <generated.h>
+int main(void) { return GENERATED_VALUE == 7 ? 0 : 1; }
+EOF
+
+cat >"$FIXTURE/external/Makefile" <<'EOF'
+.PHONY: compile-db
+compile-db:
+	@touch "$(CURDIR)/../external-described"
 EOF
 
 cat >"$FIXTURE/app/Makefile" <<'EOF'
@@ -760,6 +798,8 @@ assert_not_contains "$inherited_repeat" ' -c ' 'an inherited target-specific var
 "$MAKE" -j8 -C "$FIXTURE" check
 [ -f "$FIXTURE/functional-ran" ] || fail 'CHECKDIRS run after package completion'
 pass 'CHECKDIRS run after package completion'
+[ ! -e "$fixture_package/bin/bench" ] || fail 'package and check skip OPTIONALDIRS'
+pass 'package and check skip OPTIONALDIRS'
 
 if "$MAKE" -C "$FIXTURE/suites" check; then
     fail 'check fails when a CHECKDIRS suite fails'
@@ -809,5 +849,65 @@ pass 'clean preserves the package'
 [ ! -d "$FIXTURE/build" ] || fail 'distclean removes all build variants'
 [ ! -d "$FIXTURE/package" ] || fail 'distclean removes all package variants'
 pass 'distclean removes all generated state'
+
+# Each database line between the brackets holds one entry.
+json_lines_valid()
+{
+    awk '
+        { line[NR] = $0 }
+        END {
+            if (NR < 2 || line[1] != "[" || line[NR] != "]") exit 1
+            for (i = 2; i < NR - 1; i++) if (line[i] !~ /^\{.*\},$/) exit 1
+            if (NR > 2 && line[NR - 1] !~ /^\{.*\}$/) exit 1
+        }' "$1"
+}
+
+"$MAKE" -C "$FIXTURE" compile-db
+db_dir=$(config_value "$FIXTURE" BUILDDIR)
+db=$db_dir/compile_commands.json
+db_targets=$db_dir/compile_targets.json
+app_dir=$(config_value "$FIXTURE/app" CURDIR)
+[ -z "$(find "$FIXTURE/build" -name '*.o')" ] || fail 'compile-db compiles nothing'
+pass 'compile-db compiles nothing'
+json_lines_valid "$db" || fail 'compile-db writes a JSON array'
+json_lines_valid "$db_targets" || fail 'compile-db writes a JSON target array'
+pass 'compile-db writes JSON arrays'
+assert_equal "$(grep -c '"file": ' "$db")" "$(grep -c '"output": ' "$db_targets")" 'every entry names its target'
+assert_equal "$(grep -c "\"file\": \"$app_dir/app.cc\"" "$db")" 1 'a component reached twice appears once'
+[ -f "$(config_value "$FIXTURE/app" BUILDDIR)/compile_commands.json" ] || fail 'each component keeps its own database'
+pass 'each component keeps its own database'
+db_target_list=$(cat "$db_targets")
+assert_contains "$db_target_list" '"target": "app", "type": "BINS"' 'binaries are tagged'
+assert_contains "$db_target_list" '"target": "libsupport", "type": "STATICLIBS"' 'static libraries are tagged'
+assert_contains "$db_target_list" '"target": "ConventionTest", "type": "TESTS"' 'tests are tagged'
+assert_contains "$db_target_list" '"target": "bench", "type": "BINS"' 'compile-db describes OPTIONALDIRS'
+[ -f "$FIXTURE/external-described" ] || fail 'a Makefile without LazyMake answers compile-db'
+pass 'a Makefile without LazyMake answers compile-db'
+[ -f "$(config_value "$FIXTURE/prereq" BUILD_ROOT)/generated/include/generated.h" ] ||
+    fail 'compile-db waits for COMPILE_PREREQUISITES'
+pass 'compile-db waits for COMPILE_PREREQUISITES'
+
+# The entry holds the compile command that the object's rule runs.
+db_command=$(sed -n "s|.*\"file\": \"$app_dir/app.cc\".*\"command\": \"\(.*\)\"}.*|\1|p" "$db" |
+    sed -e 's/\\"/"/g' -e 's/\\\\/\\/g')
+rule_command=$("$MAKE" -C "$FIXTURE/app" -n -B | grep -- ' -c ' | grep '"app.cc"' | grep -v '^printf' | tr -s ' ')
+assert_contains "$db_command" ' -c ' 'the database holds a compile command'
+assert_equal "$db_command" "$rule_command" 'database commands match object rules'
+
+"$MAKE" -C "$FIXTURE/prereq"
+sleep 1
+printf '#define GENERATED_VALUE 7\n' >"$(config_value "$FIXTURE/prereq" BUILD_ROOT)/generated/include/generated.h"
+prereq_rebuild=$("$MAKE" -C "$FIXTURE/prereq")
+assert_contains "$prereq_rebuild" ' -c ' 'a changed COMPILE_PREREQUISITES file rebuilds objects'
+prereq_repeat=$("$MAKE" -C "$FIXTURE/prereq")
+assert_not_contains "$prereq_repeat" ' -c ' 'unchanged COMPILE_PREREQUISITES do not rebuild'
+
+"$MAKE" -C "$ROOT/examples/shared_lib" compile-db
+shared_db=$(cat "$(config_value "$ROOT/examples/shared_lib" BUILDDIR)/compile_commands.json")
+shared_targets=$(cat "$(config_value "$ROOT/examples/shared_lib" BUILDDIR)/compile_targets.json")
+assert_contains "$shared_db" '-fPIC' 'shared-library entries keep their extra flags'
+assert_contains "$shared_targets" '"type": "DYNLIBS"' 'shared libraries are tagged'
+
+"$MAKE" -C "$FIXTURE" distclean
 
 pass 'platform harness completed'
