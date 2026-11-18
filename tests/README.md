@@ -18,6 +18,8 @@ temporary multi-component project to verify:
 - Check order, overlapping suites, prerequisites, and build failures
 - Parallel builds, header dependencies, and incremental behavior
 - Build variant propagation and cleanup semantics
+- Compilation databases: commands that match object rules, target types,
+  merged components, optional components, and compile prerequisites
 
 Run it directly on the current host:
 

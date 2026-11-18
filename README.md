@@ -88,7 +88,9 @@ make check    production package + every test
 
 - Include `Makefile.inc` last. Its location defines the project root.
 - Targets: `BINS`, `DYNLIBS`, `STATICLIBS`, and `TESTS`.
-- Composition: `SUBDIRS`, `CHECKDIRS`, and `RESOURCES`.
+- Composition: `SUBDIRS`, `CHECKDIRS`, `OPTIONALDIRS`, and `RESOURCES`.
+  `OPTIONALDIRS` names components that build only on request, such as
+  benchmarks; `make` and `make check` skip them.
 - Sources: `<target>_SOURCES`; defaults to `<target>.cc`. A source outside the
   component, such as `../shared/Probe.cc`, still gets one object per target.
 - Extensions: `.c`, `.cc`, `.cpp`, and `.cxx`.
@@ -101,6 +103,9 @@ make check    production package + every test
   archive, or link command changed. Each output records its last command
   under `build/`. A variable an output inherits from another target's
   target-specific assignment is not compared.
+- Compile prerequisites: every object waits for `COMPILE_PREREQUISITES`, such
+  as the stamp of a dependency build that installs headers, and rebuilds when
+  one is newer. Dependency files omit headers found through `-isystem`.
 - Groups: `TARGET_GROUPS`, `<group>_TARGETS`, and `<group>_STATICLIBS`. A
   group applies archive paths to named binaries, shared libraries, or tests
   as both link inputs and prerequisites. Per-target `_STATICLIBS` come first,
@@ -141,12 +146,28 @@ libcore_PATH = $(PKGDIR)/lib/libcore.a
 libcore_DIR = $(PROJECT_ROOT)/lib
 ```
 
+- Compilation database: `make compile-db` writes `compile_commands.json` in
+  the component's build directory without compiling. Each object's entry holds
+  the command that builds it. The database merges in every component that
+  `SUBDIRS`, `CHECKDIRS`, and `OPTIONALDIRS` reach and waits for
+  `COMPILE_PREREQUISITES`. Clang tools reject extra keys, so
+  `compile_targets.json` gives each entry's `output` its `target` and `type`:
+  `BINS`, `DYNLIBS`, `STATICLIBS`, or `TESTS`. A listed directory whose
+  Makefile does not include `Makefile.inc` must define a `compile-db` rule,
+  which may be empty.
+
+```make
+OPTIONALDIRS := benchmarks
+COMPILE_PREREQUISITES = $(BUILD_ROOT)/dependencies.stamp
+```
+
 | Command | Result |
 | --- | --- |
 | `make` | Package plus local tests |
 | `make package` | Production targets, resources, and `SUBDIRS` |
 | `make check` | Build, then run all tests; `-j` overlaps suites |
 | `make <name>` | One declared target |
+| `make compile-db` | Compilation database, without compiling |
 | `make clean` | Current component's build state |
 | `make distclean` | Every build and package variant |
 
@@ -170,6 +191,7 @@ make -C examples/mixed_sources
 make -C examples/test_suite check
 make -C examples/target_groups check
 make -C examples/external_staticlibs
+make -C examples/main_deliverable compile-db
 ```
 
 Requires GNU Make 3.81+, a C/C++ toolchain, and basic host utilities. Validate

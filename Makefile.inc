@@ -156,13 +156,15 @@ $(SUBDIRS):
 # Compile one object for each target/source pair. Keeping the source extension
 # in the object name prevents foo.c and foo.cc from colliding. Each output
 # declares its command here and gets its recipe from the command records below.
+# An object's command names the object instead of using $@, so compile-db can
+# print it outside the object's rule.
 define OBJECT_template
-lazymake_command.$(call object_path,$(1),$(2)) = $(if $(filter %.c,$(2)),$$(CC) -c $$(LAZYMAKE_CPPFLAGS) $$(CPPFLAGS) $$(LAZYMAKE_CFLAGS) $$(CFLAGS) $$($(1)_CPPFLAGS) $$($(1)_CFLAGS) $(3),$$(CXX) -c $$(LAZYMAKE_CPPFLAGS) $$(CPPFLAGS) $$(LAZYMAKE_CXXFLAGS) $$(CXXFLAGS) $$($(1)_CPPFLAGS) $$($(1)_CXXFLAGS) $(3)) -MMD -MP -MF "$$@.d" -MT "$$@" "$(2)" -o "$$@"
-$(call object_path,$(1),$(2)): $(2)
+lazymake_command.$(3) = $(if $(filter %.c,$(2)),$$(CC) -c $$(LAZYMAKE_CPPFLAGS) $$(CPPFLAGS) $$(LAZYMAKE_CFLAGS) $$(CFLAGS) $$($(1)_CPPFLAGS) $$($(1)_CFLAGS) $(4),$$(CXX) -c $$(LAZYMAKE_CPPFLAGS) $$(CPPFLAGS) $$(LAZYMAKE_CXXFLAGS) $$(CXXFLAGS) $$($(1)_CPPFLAGS) $$($(1)_CXXFLAGS) $(4)) -MMD -MP -MF "$(3).d" -MT "$(3)" "$(2)" -o "$(3)"
+$(3): $(2)
 endef
 
 define TARGET_OBJECTS_template
-$(foreach source,$(call target_sources,$(1)),$(eval $(call OBJECT_template,$(1),$(source),$(2))))
+$(foreach source,$(call target_sources,$(1)),$(eval $(call OBJECT_template,$(1),$(source),$(call object_path,$(1),$(source)),$(2))))
 endef
 
 $(foreach target,$(BINS),$(eval $(call TARGET_OBJECTS_template,$(target),)))
@@ -246,6 +248,56 @@ $(PACKAGE_OUTPUTS) $(TEST_OUTPUTS): $$(lazymake_command_changed)
 	$(call lazymake_build,>"$(call command_record_path,$@)")
 
 -include $(addsuffix .d,$(ALL_OBJECTS)) $(call command_record_path,$(PACKAGE_OUTPUTS) $(TEST_OUTPUTS))
+
+# Every object waits for COMPILE_PREREQUISITES, such as a dependency build that
+# installs headers. Dependency files omit headers found through -isystem, so
+# objects also rebuild when a prerequisite changes. The compile database waits
+# for the same files, which lets a tool parse each source after compile-db.
+$(ALL_OBJECTS) compile-db: $$(COMPILE_PREREQUISITES)
+
+# compile-db writes this component's JSON compilation database without
+# compiling anything, then merges in the databases of SUBDIRS, CHECKDIRS, and
+# OPTIONALDIRS. Each object's entry holds the command that would build it.
+# Clang tools reject other keys in a database, so compile_targets.json names
+# each object's target and the list that declares it.
+COMPILE_DB := $(BUILDDIR)/compile_commands.json
+COMPILE_TARGETS := $(BUILDDIR)/compile_targets.json
+COMPILE_DB_DIRS := $(SUBDIRS) $(CHECKDIRS) $(OPTIONALDIRS)
+
+# A JSON string inside a single-quoted shell word.
+lazymake_json = "$(subst ','\'',$(subst ",\",$(subst \,\\,$(1))))"
+lazymake_component_builddir = $(BUILD_ROOT)/$(patsubst $(PROJECT_ROOT)/%,%,$(abspath $(1)))
+
+# Both files keep one entry per line between the brackets, so a parent strips
+# the brackets and commas from each child's file and restores them once after
+# removing entries that it reached twice.
+lazymake_json_lines = sed -e '1d' -e '$$d' -e 's/,$$//'
+lazymake_json_array = { printf '[\n'; awk '!seen[$$0]++' "$(1).tmp" | sed '$$!s/$$/,/'; printf ']\n'; } >"$(1).new" && mv "$(1).new" "$(1)" && rm -f "$(1).tmp"
+
+# One recipe line per object keeps every shell argument short. The arguments
+# are a target, its source, the object, and the declaring list.
+define lazymake_compile_db_entry
+@printf '%s\n' '{"directory": $(call lazymake_json,$(CURDIR)), "file": $(call lazymake_json,$(abspath $(2))), "output": $(call lazymake_json,$(3)), "command": $(call lazymake_json,$(strip $(lazymake_command.$(3))))}' >>"$(COMPILE_DB).tmp" && printf '%s\n' '{"output": $(call lazymake_json,$(3)), "target": $(call lazymake_json,$(1)), "type": "$(4)"}' >>"$(COMPILE_TARGETS).tmp"
+
+endef
+
+# Components are described one at a time, so one reached through two lists is
+# never written twice at once. A Makefile that does not include this file must
+# define compile-db itself; without a database in its build directory, it adds
+# no entries.
+.PHONY: compile-db
+compile-db:
+	@mkdir -p "$(BUILDDIR)"
+	@: >"$(COMPILE_DB).tmp" && : >"$(COMPILE_TARGETS).tmp"
+	$(foreach list,BINS DYNLIBS STATICLIBS TESTS,$(foreach target,$($(list)),$(foreach source,$(call target_sources,$(target)),$(call lazymake_compile_db_entry,$(target),$(source),$(call object_path,$(target),$(source)),$(list)))))
+	+@for dir in $(COMPILE_DB_DIRS); do $(MAKE) -C "$$dir" compile-db || exit 1; done
+	@for child in $(foreach dir,$(COMPILE_DB_DIRS),"$(call lazymake_component_builddir,$(dir))"); do \
+		[ ! -f "$$child/compile_commands.json" ] || \
+		{ $(lazymake_json_lines) "$$child/compile_commands.json" >>"$(COMPILE_DB).tmp" && \
+		  $(lazymake_json_lines) "$$child/compile_targets.json" >>"$(COMPILE_TARGETS).tmp"; } || exit 1; \
+	done
+	@$(call lazymake_json_array,$(COMPILE_DB))
+	@$(call lazymake_json_array,$(COMPILE_TARGETS))
 
 # Archives this component links. External refresh rules fire only for paths
 # that appear here, so a shared table does not recurse from unrelated packages.
