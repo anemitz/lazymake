@@ -1,4 +1,5 @@
-FROM ubuntu:24.04
+ARG UBUNTU_RELEASE=24.04
+FROM ubuntu:${UBUNTU_RELEASE}
 
 ENV DEBIAN_FRONTEND=noninteractive
 

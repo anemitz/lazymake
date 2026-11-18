@@ -28,12 +28,13 @@ make -C tests host
 On macOS, this is the native Darwin test. Docker cannot test a Darwin kernel because
 Docker Desktop runs Linux virtual machines.
 
-Run the clean Ubuntu tests for both tested CPU architectures:
+Run the clean Ubuntu tests for every tested release and CPU architecture:
 
 ```sh
 make -C tests docker
 ```
 
-The Docker target builds separate Ubuntu 24.04 images for `linux/arm64` and
-`linux/amd64`. Each image contains only G++, GNU Make, and their required base
-packages.
+The Docker target builds Ubuntu 24.04 and 26.04 images, which ship GNU Make 4.3
+and 4.4.1, for `linux/arm64` and `linux/amd64`. Each image contains only G++,
+GNU Make, and their required base packages. `make -C tests docker-arm64` runs one
+architecture, and `make -C tests docker-26.04-arm64` runs one image.

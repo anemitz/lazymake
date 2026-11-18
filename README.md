@@ -173,5 +173,5 @@ make -C examples/external_staticlibs
 ```
 
 Requires GNU Make 3.81+, a C/C++ toolchain, and basic host utilities. Validate
-LazyMake with `make -C tests host`; use `make -C tests docker` for Ubuntu ARM64 and
-AMD64.
+LazyMake with `make -C tests host`; use `make -C tests docker` for Ubuntu 24.04 and
+26.04 on ARM64 and AMD64.
