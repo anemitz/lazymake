@@ -204,6 +204,37 @@ assert_not_contains "$second_build" ' -c ' 'unchanged build does not compile'
 assert_not_contains "$second_build" ' -o ' 'unchanged build does not link'
 assert_not_contains "$second_build" 'cp ' 'direct package outputs need no copy'
 
+hello_app=$ROOT/examples/main_deliverable/app
+flag_build=$("$MAKE" -C "$hello_app" CXXFLAGS=-DLAZYMAKE_FLAG_TEST)
+assert_contains "$flag_build" '-DLAZYMAKE_FLAG_TEST' 'changed compile flags recompile'
+assert_contains "$flag_build" '/bin/hello' 'changed compile flags relink'
+flag_repeat=$("$MAKE" -C "$hello_app" CXXFLAGS=-DLAZYMAKE_FLAG_TEST)
+assert_not_contains "$flag_repeat" ' -c ' 'repeated compile flags do not recompile'
+assert_not_contains "$flag_repeat" ' -o ' 'repeated compile flags do not relink'
+"$MAKE" -C "$hello_app" -q CXXFLAGS=-DLAZYMAKE_FLAG_TEST || fail 'question mode accepts an unchanged command'
+pass 'question mode accepts an unchanged command'
+
+flag_dryrun=$("$MAKE" -C "$hello_app" -n CXXFLAGS=-DLAZYMAKE_OTHER_FLAG)
+assert_contains "$flag_dryrun" '-DLAZYMAKE_OTHER_FLAG' 'dry runs show a changed command'
+"$MAKE" -C "$hello_app" -q CXXFLAGS=-DLAZYMAKE_FLAG_TEST || fail 'dry runs record no command'
+pass 'dry runs record no command'
+
+link_build=$("$MAKE" -C "$hello_app" CXXFLAGS=-DLAZYMAKE_FLAG_TEST LDLIBS=-lm)
+assert_not_contains "$link_build" ' -c ' 'changed link inputs do not recompile'
+assert_contains "$link_build" '/bin/hello' 'changed link inputs relink'
+
+# Records must reproduce characters that Make or the shell would interpret.
+# The second note differs only after the hash, in an escaped dollar.
+note="-DLAZYMAKE_NOTE='\"it'\\''s #1, \$\$A\"'"
+other_note="-DLAZYMAKE_NOTE='\"it'\\''s #1, \$\$B\"'"
+"$MAKE" -C "$hello_app" "CXXFLAGS=$note"
+note_repeat=$("$MAKE" -C "$hello_app" "CXXFLAGS=$note")
+assert_not_contains "$note_repeat" ' -c ' 'records reproduce quotes, hashes, commas, and dollars'
+note_change=$("$MAKE" -C "$hello_app" "CXXFLAGS=$other_note")
+assert_contains "$note_change" ' -c ' 'records keep text after a hash and beside a dollar'
+# Restore the default command so only the header edit below can rebuild.
+"$MAKE" -C "$hello_app"
+
 sleep 1
 cp "$HELLO_HEADER" "$HELLO_HEADER.orig"
 printf '#define HELLO_GREETING "rebuilt after header edit"\n' >"$HELLO_HEADER"
@@ -702,6 +733,28 @@ outside_build=$(config_value "$FIXTURE/outside/app" BUILDDIR)
 [ -f "$outside_build/first/__/shared/value.cc.o" ] || fail 'outside source object stays under its target'
 [ ! -e "$outside_build/shared" ] || fail 'outside source object leaves its target'
 pass 'outside source objects stay under their targets'
+
+mkdir -p "$FIXTURE/archive" "$FIXTURE/inherited"
+cat >"$FIXTURE/archive/Makefile" <<'EOF'
+STATICLIBS := libparts
+libparts_SOURCES := one.cc two.cc
+include ../Build.mk
+EOF
+printf 'int one(void) { return 1; }\n' >"$FIXTURE/archive/one.cc"
+printf 'int two(void) { return 2; }\n' >"$FIXTURE/archive/two.cc"
+"$MAKE" -C "$FIXTURE/archive"
+"$MAKE" -C "$FIXTURE/archive" libparts_SOURCES=one.cc
+assert_not_contains "$(ar t "$fixture_package/lib/libparts.a")" 'two.cc.o' 'a dropped source leaves the archive'
+
+cat >"$FIXTURE/inherited/Makefile" <<'EOF'
+BINS := app
+include ../Build.mk
+$(call bin_path,app): CXXFLAGS += -DINHERITED
+EOF
+printf 'int main(void) { return 0; }\n' >"$FIXTURE/inherited/app.cc"
+"$MAKE" -C "$FIXTURE/inherited"
+inherited_repeat=$("$MAKE" -C "$FIXTURE/inherited")
+assert_not_contains "$inherited_repeat" ' -c ' 'an inherited target-specific variable does not rebuild every run'
 
 "$MAKE" -C "$FIXTURE" distclean
 "$MAKE" -j8 -C "$FIXTURE" check

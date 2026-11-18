@@ -17,7 +17,7 @@ component Makefile ──include──▶ Makefile.inc ──▶ build/… + pac
 
 Run `make`. You get:
 
-- Incremental builds with automatic header tracking
+- Incremental builds that track headers and command changes
 - Executables, libraries, tests, and packaged resources
 - Predictable per-platform artifact directories
 - Standard compiler and linker overrides
@@ -97,6 +97,10 @@ make check    production package + every test
 - Per-target settings: `<target>_CPPFLAGS`, `<target>_CFLAGS`,
   `<target>_CXXFLAGS`, `<target>_LDFLAGS`, `<target>_LDLIBS`, and
   `<target>_STATICLIBS`.
+- Rebuilds: an output rebuilds when a prerequisite is newer or its compile,
+  archive, or link command changed. Each output records its last command
+  under `build/`. A variable an output inherits from another target's
+  target-specific assignment is not compared.
 - Groups: `TARGET_GROUPS`, `<group>_TARGETS`, and `<group>_STATICLIBS`. A
   group applies archive paths to named binaries, shared libraries, or tests
   as both link inputs and prerequisites. Per-target `_STATICLIBS` come first,
